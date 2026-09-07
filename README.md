@@ -1,5 +1,7 @@
 # 🔎 RAG Assistant
 
+![CI](https://github.com/ganapriyahs/rag-assistant/actions/workflows/ci.yml/badge.svg)
+
 A local, fully-functional Retrieval-Augmented Generation (RAG) system: documents are chunked, embedded, and stored in a vector database, then retrieved and used to ground answers from a locally-running LLM — no paid API required.
 
 ![RAG Assistant Demo](docs/demo.png)
