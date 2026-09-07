@@ -9,6 +9,7 @@ load_dotenv()
 CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "./chroma_db")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "rag_docs")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 TOP_K = 3
 
@@ -16,6 +17,7 @@ _client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
 _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
     model_name="all-MiniLM-L6-v2"
 )
+_ollama_client = ollama.Client(host=OLLAMA_HOST)
 
 
 def get_collection():
@@ -56,7 +58,7 @@ def generate_answer(question: str, top_k: int = TOP_K) -> dict:
 
     prompt = build_prompt(question, chunks)
 
-    response = ollama.chat(
+    response = _ollama_client.chat(
         model=OLLAMA_MODEL,
         messages=[{"role": "user", "content": prompt}],
     )
