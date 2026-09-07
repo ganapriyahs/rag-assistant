@@ -1,0 +1,13 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - OLLAMA_MODEL=llama3.2
+      - CHROMA_DB_PATH=/app/chroma_db
+      - COLLECTION_NAME=rag_docs
+      - ANONYMIZED_TELEMETRY=False
+    volumes:
+      - ./chroma_db:/app/chroma_db
