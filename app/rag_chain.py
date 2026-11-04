@@ -43,7 +43,15 @@ def retrieve(question: str, top_k: int = TOP_K, rerank: bool = RERANK) -> list[d
 
     chunks = []
     for text, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
-        chunks.append({"text": text, "source": meta["source"], "distance": dist})
+        chunks.append(
+            {
+                "text": text,
+                "source": meta["source"],
+                "chapter": meta.get("chapter", ""),
+                "page": meta.get("page", 0),
+                "distance": dist,
+            }
+        )
 
     best_distance = chunks[0]["distance"] if chunks else None
 

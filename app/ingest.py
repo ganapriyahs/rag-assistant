@@ -19,7 +19,7 @@ CHUNK_OVERLAP = 50
 # have dotted leaders ("Chapter 3: Hardware.....71"), so the title must contain no dots.
 CHAPTER_HEADER = re.compile(r"^Chapter (\d+): ([^.]+?)\s*$")
 # The PDF has 5 pages of front matter before printed page 1.
-FRONT_MATTER_PAGES = 5
+PAGE_OFFSET = 0
 
 
 def chunk_with_offsets(
@@ -57,7 +57,7 @@ def build_page_index(text: str) -> list[tuple[int, int, str]]:
             m = CHAPTER_HEADER.match(line.strip())
             if m:
                 chapter = f"Chapter {m.group(1)}: {m.group(2)}"
-        index.append((offset, pdf_page - FRONT_MATTER_PAGES, chapter))
+        index.append((offset, pdf_page - PAGE_OFFSET, chapter))
         offset += len(page_text) + 1  # +1 for the form feed itself
     return index
 
