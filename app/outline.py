@@ -7,10 +7,20 @@ LEADER = re.compile(r"^(?P<title>.*?[^\s.])\s*(?:\.\s*){2,}(?P<page>\d+)\s*$")
 BARE_NUMBER = re.compile(r"^\d+\.\d+$")  # a section number sitting alone on its line
 NUMBERED = re.compile(r"^(\d+(?:\.\d+)+)\s+(.+)$")  # "1.2.1 Title"
 CHAPTER = re.compile(r"^Chapter (\d+):\s*(.+)$")
+APPENDIX = re.compile(r"^Appendix ([A-Z]):\s*(.+)$")
+
+# Verified against the PDF: every chapter and appendix divider page ("CHAPTER N",
+# "APPENDIX A") and every numbered heading sits exactly 2 pages after the page number
+# the table of contents lists.
 TOC_TO_PDF_PAGE = 2
 
+
 def parse_toc(text: str) -> list[dict]:
-    """Parse the table of contents (everything before the first real chapter header) into an outline."""
+    """Parse the table of contents (everything before the first real chapter header) into an outline.
+
+    Each entry has: number, title, level, toc_page and label. Back matter (appendices,
+    their unnumbered sub-entries, acknowledgements) is marked backmatter=True.
+    """
     lines = text.splitlines()
     end = next((i for i, line in enumerate(lines) if CHAPTER_HEADER.match(line.strip())), len(lines))
 
@@ -31,31 +41,78 @@ def parse_toc(text: str) -> list[dict]:
 
         title, page = m.group("title"), int(m.group("page"))
         mc = CHAPTER.match(title)
+        ma = APPENDIX.match(title)
+        mn = NUMBERED.match(title)
+
         if mc:
-            entries.append({"number": mc.group(1), "title": mc.group(2).strip(), "level": 0, "toc_page": page})
-        else:
-            mn = NUMBERED.match(title)
-            if mn:
-                number, name = mn.group(1), mn.group(2)
-            elif pending:
-                number, name = pending, title
-            else:
-                pending = None
-                continue
             entries.append(
-                {"number": number, "title": name.strip(), "level": number.count("."), "toc_page": page}
+                {
+                    "number": mc.group(1),
+                    "title": mc.group(2).strip(),
+                    "level": 0,
+                    "toc_page": page,
+                    "label": f"Chapter {mc.group(1)}: {mc.group(2).strip()}",
+                }
+            )
+        elif ma:
+            entries.append(
+                {
+                    "number": ma.group(1),
+                    "title": ma.group(2).strip(),
+                    "level": 0,
+                    "toc_page": page,
+                    "label": f"Appendix {ma.group(1)}: {ma.group(2).strip()}",
+                    "backmatter": True,
+                }
+            )
+        elif mn or pending:
+            number, name = (mn.group(1), mn.group(2)) if mn else (pending, title)
+            entries.append(
+                {
+                    "number": number,
+                    "title": name.strip(),
+                    "level": number.count("."),
+                    "toc_page": page,
+                    "label": f"{number} {name.strip()}",
+                }
+            )
+        elif title.lower().startswith("acknowledg"):
+            entries.append(
+                {
+                    "number": "Ack",
+                    "title": title,
+                    "level": 0,
+                    "toc_page": page,
+                    "label": title,
+                    "backmatter": True,
+                }
+            )
+        elif entries and entries[-1].get("backmatter") and entries[-1]["number"] != "Ack":
+            # an unnumbered sub-entry under the last appendix, e.g. "Architecture" under Appendix B
+            parent = entries[-1]["number"].split(".")[0]
+            count = sum(1 for e in entries if e["number"].startswith(parent + "."))
+            entries.append(
+                {
+                    "number": f"{parent}.{count + 1}",
+                    "title": title,
+                    "level": 1,
+                    "toc_page": page,
+                    "label": title,
+                    "backmatter": True,
+                }
             )
         pending = None
     return entries
 
+
 def locate_entries(text: str, entries: list[dict]) -> list[dict]:
     """Add 'pdf_page', 'start_offset' and 'approx' to each outline entry.
 
-    Chapters use the table-of-contents page plus a verified constant, because the
-    extracted text has no divider lines to search for; they start at their page's
-    first character. Sections are searched for in the body, taking the earliest match
-    of either heading layout. If a heading can't be found, it falls back to the start
-    of its TOC page + 2 and is marked approx=True.
+    Chapters, appendices and back matter use the table-of-contents page plus a verified
+    constant, because the extracted text has no divider lines to search for; they start
+    at their page's first character. Numbered sections are searched for in the body,
+    taking the earliest match of either heading layout. If a heading can't be found, it
+    falls back to the start of its TOC page + 2 and is marked approx=True.
     """
     body = re.search(r"^Chapter \d+: [^.\n]+$", text, re.M)
     start = body.start() if body else 0  # skip the table of contents itself
@@ -63,7 +120,7 @@ def locate_entries(text: str, entries: list[dict]) -> list[dict]:
 
     for e in entries:
         e["approx"] = False
-        if e["level"] == 0:
+        if e["level"] == 0 or e.get("backmatter"):
             e["pdf_page"] = e["toc_page"] + TOC_TO_PDF_PAGE
             e["start_offset"] = index[e["pdf_page"] - 1][0]
             continue
@@ -90,6 +147,7 @@ def locate_entries(text: str, entries: list[dict]) -> list[dict]:
             e["start_offset"] = index[e["pdf_page"] - 1][0]
             e["approx"] = True
     return entries
+
 
 def build_outline(text: str) -> list[dict]:
     """Parse the table of contents, locate every heading, and add each entry's end_offset."""

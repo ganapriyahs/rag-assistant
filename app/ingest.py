@@ -64,7 +64,7 @@ def build_page_index(text: str) -> list[tuple[int, int, str]]:
     from app.outline import TOC_TO_PDF_PAGE, parse_toc
 
     chapter_starts = {
-        e["toc_page"] + TOC_TO_PDF_PAGE: f"Chapter {e['number']}: {e['title']}"
+        e["toc_page"] + TOC_TO_PDF_PAGE: e["label"]
         for e in parse_toc(text)
         if e["level"] == 0
     }
