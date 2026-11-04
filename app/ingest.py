@@ -18,30 +18,38 @@ CHUNK_OVERLAP = 50
 # Running page headers look like "Chapter 3: Hardware". Table-of-contents lines
 # have dotted leaders ("Chapter 3: Hardware.....71"), so the title must contain no dots.
 CHAPTER_HEADER = re.compile(r"^Chapter (\d+): ([^.]+?)\s*$")
-# The PDF has 5 pages of front matter before printed page 1.
+# Store the PDF page number (what a PDF viewer shows). The numbers printed on the
+# pages are not a constant offset away from it, so we don't use them.
 PAGE_OFFSET = 0
 
 
 def chunk_with_offsets(
     text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP
-) -> list[tuple[int, str]]:
-    """Split text into overlapping chunks, returning (start_offset, chunk) pairs."""
+) -> list[tuple[int, int, str]]:
+    """Split text into overlapping chunks, returning (first_char, last_char, chunk) triples.
+
+    first_char and last_char are offsets of the chunk's stripped content in the full text.
+    """
     chunks = []
     start = 0
     while start < len(text):
-        end = start + chunk_size
-        chunks.append((start, text[start:end]))
+        raw = text[start : start + chunk_size]
+        stripped = raw.strip()
+        if stripped:
+            first = start + (len(raw) - len(raw.lstrip()))
+            last = first + len(stripped) - 1
+            chunks.append((first, last, stripped))
         start += chunk_size - overlap
-    return [(s, c.strip()) for s, c in chunks if c.strip()]
+    return chunks
 
 
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
     """Split text into overlapping chunks so retrieval can find focused, relevant passages."""
-    return [c for _, c in chunk_with_offsets(text, chunk_size, overlap)]
+    return [c for _, _, c in chunk_with_offsets(text, chunk_size, overlap)]
 
 
 def build_page_index(text: str) -> list[tuple[int, int, str]]:
-    """Return one (start_offset, printed_page, chapter) entry per page.
+    """Return one (start_offset, page, chapter) entry per page.
 
     Pages are separated by form feed characters. Text without form feeds is
     treated as a single unpaged document: page 0, no chapter.
@@ -105,8 +113,9 @@ def build_vector_store():
     ids, texts, metadatas = [], [], []
     for doc in docs:
         page_index = build_page_index(doc["text"])
-        for i, (offset, chunk) in enumerate(chunk_with_offsets(doc["text"])):
-            page, chapter = locate(page_index, offset)
+        for i, (first, last, chunk) in enumerate(chunk_with_offsets(doc["text"])):
+            page, chapter = locate(page_index, first)
+            page_end, _ = locate(page_index, last)
             ids.append(f"{doc['source']}_{i}")
             texts.append(chunk)
             metadatas.append(
@@ -114,6 +123,7 @@ def build_vector_store():
                     "source": doc["source"],
                     "chunk_index": i,
                     "page": page,
+                    "page_end": page_end,
                     "chapter": chapter,
                 }
             )

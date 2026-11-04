@@ -31,6 +31,13 @@ def get_collection():
     return _client.get_collection(name=COLLECTION_NAME, embedding_function=_embedding_fn)
 
 
+def _get_reranker():
+    global _reranker
+    if _reranker is None:
+        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    return _reranker
+
+
 def retrieve(question: str, top_k: int = TOP_K, rerank: bool = RERANK) -> list[dict]:
     """Embed the question, optionally re-rank a wider candidate pool, and return the top_k chunks."""
     collection = get_collection()
@@ -49,6 +56,7 @@ def retrieve(question: str, top_k: int = TOP_K, rerank: bool = RERANK) -> list[d
                 "source": meta["source"],
                 "chapter": meta.get("chapter", ""),
                 "page": meta.get("page", 0),
+                "page_end": meta.get("page_end", meta.get("page", 0)),
                 "distance": dist,
             }
         )
@@ -80,16 +88,35 @@ Question: {question}
 Answer:"""
 
 
+def format_location(chunk: dict) -> str:
+    """Turn a chunk's chapter/page metadata into a short human-readable location."""
+    parts = []
+    if chunk.get("chapter"):
+        parts.append(chunk["chapter"])
+    page = chunk.get("page", 0)
+    page_end = chunk.get("page_end", page)
+    if page > 0:
+        if page_end > page:
+            parts.append(f"PDF pp. {page}–{page_end}")
+        else:
+            parts.append(f"PDF p. {page}")
+    return ", ".join(parts)
+
+
 def generate_answer(question: str, top_k: int = TOP_K) -> dict:
     """Full RAG flow: retrieve relevant chunks, then generate a grounded answer."""
     chunks = retrieve(question, top_k=top_k)
 
     if not chunks:
-        return {"answer": "No documents found. Run ingestion first.", "sources": []}
+        return {"answer": "No documents found. Run ingestion first.", "sources": [], "locations": []}
 
     best = chunks[0].get("best_distance", 0)
     if best > MAX_DISTANCE:
-        return {"answer": "I don't know. That doesn't seem to be covered in the documents.", "sources": []}
+        return {
+            "answer": "I don't know. That doesn't seem to be covered in the documents.",
+            "sources": [],
+            "locations": [],
+        }
 
     prompt = build_prompt(question, chunks)
 
@@ -101,16 +128,13 @@ def generate_answer(question: str, top_k: int = TOP_K) -> dict:
     answer = response["message"]["content"]
     declined = any(p in answer.lower().replace("’", "'") for p in DECLINE_PHRASES)
     sources = [] if declined else sorted(set(c["source"] for c in chunks))
-    return {"answer": answer, "sources": sources}
+    if declined:
+        locations = []
+    else:
+        # dict.fromkeys removes duplicates while keeping the rank order
+        locations = list(dict.fromkeys(loc for loc in map(format_location, chunks) if loc))
+    return {"answer": answer, "sources": sources, "locations": locations}
 
-
-
-
-def _get_reranker():
-    global _reranker
-    if _reranker is None:
-        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    return _reranker
 
 if __name__ == "__main__":
     result = generate_answer("What is retrieval-augmented generation?")
