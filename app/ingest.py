@@ -1,4 +1,6 @@
 import os
+import re
+from bisect import bisect_right
 from pathlib import Path
 from dotenv import load_dotenv
 import chromadb
@@ -13,16 +15,59 @@ DATA_DIR = Path(__file__).parent.parent / "data" / "sample_docs"
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
 
+# Running page headers look like "Chapter 3: Hardware". Table-of-contents lines
+# have dotted leaders ("Chapter 3: Hardware.....71"), so the title must contain no dots.
+CHAPTER_HEADER = re.compile(r"^Chapter (\d+): ([^.]+?)\s*$")
+# The PDF has 5 pages of front matter before printed page 1.
+FRONT_MATTER_PAGES = 5
 
-def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    """Split text into overlapping chunks so retrieval can find focused, relevant passages."""
+
+def chunk_with_offsets(
+    text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP
+) -> list[tuple[int, str]]:
+    """Split text into overlapping chunks, returning (start_offset, chunk) pairs."""
     chunks = []
     start = 0
     while start < len(text):
         end = start + chunk_size
-        chunks.append(text[start:end])
+        chunks.append((start, text[start:end]))
         start += chunk_size - overlap
-    return [c.strip() for c in chunks if c.strip()]
+    return [(s, c.strip()) for s, c in chunks if c.strip()]
+
+
+def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
+    """Split text into overlapping chunks so retrieval can find focused, relevant passages."""
+    return [c for _, c in chunk_with_offsets(text, chunk_size, overlap)]
+
+
+def build_page_index(text: str) -> list[tuple[int, int, str]]:
+    """Return one (start_offset, printed_page, chapter) entry per page.
+
+    Pages are separated by form feed characters. Text without form feeds is
+    treated as a single unpaged document: page 0, no chapter.
+    """
+    if "\f" not in text:
+        return [(0, 0, "")]
+
+    index = []
+    chapter = ""
+    offset = 0
+    for pdf_page, page_text in enumerate(text.split("\f"), start=1):
+        for line in page_text.splitlines():
+            m = CHAPTER_HEADER.match(line.strip())
+            if m:
+                chapter = f"Chapter {m.group(1)}: {m.group(2)}"
+        index.append((offset, pdf_page - FRONT_MATTER_PAGES, chapter))
+        offset += len(page_text) + 1  # +1 for the form feed itself
+    return index
+
+
+def locate(index: list[tuple[int, int, str]], offset: int) -> tuple[int, str]:
+    """Find the (page, chapter) that a character offset falls in."""
+    starts = [s for s, _, _ in index]
+    k = bisect_right(starts, offset) - 1
+    _, page, chapter = index[k]
+    return page, chapter
 
 
 def load_documents(data_dir: Path = DATA_DIR) -> list[dict]:
@@ -59,11 +104,19 @@ def build_vector_store():
 
     ids, texts, metadatas = [], [], []
     for doc in docs:
-        chunks = chunk_text(doc["text"])
-        for i, chunk in enumerate(chunks):
+        page_index = build_page_index(doc["text"])
+        for i, (offset, chunk) in enumerate(chunk_with_offsets(doc["text"])):
+            page, chapter = locate(page_index, offset)
             ids.append(f"{doc['source']}_{i}")
             texts.append(chunk)
-            metadatas.append({"source": doc["source"], "chunk_index": i})
+            metadatas.append(
+                {
+                    "source": doc["source"],
+                    "chunk_index": i,
+                    "page": page,
+                    "chapter": chapter,
+                }
+            )
 
     collection.add(ids=ids, documents=texts, metadatas=metadatas)
     print(f"Ingested {len(texts)} chunks from {len(docs)} document(s) into '{COLLECTION_NAME}'.")
