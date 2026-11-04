@@ -5,3 +5,5 @@ __pycache__/
 chroma_db/
 .DS_Store
 *.egg-info/
+data/sample_docs/inference_engineering.pdf
+data/sample_docs/inference_engineering.txt

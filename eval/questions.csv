@@ -1,0 +1,20 @@
+question,key_phrase,answerable
+What is distillation?,to emulate the larger model,yes
+Which inference phase determines TTFT and is compute-bound?,Prefill is a compute-bound process|Prefill: Determines the time,yes
+Which inference phase is memory-bound and determines TPS?,Determines the tokens per second,yes
+What ops:byte ratio does an H100 have in FP16?,about 295,yes
+What is arithmetic intensity?,ratio between work and memory traffic,yes
+What does PagedAttention do?,partitions the KV cache into blocks,yes
+What is kernel fusion?,single kernel that handles both operations,yes
+What is Medusa speculative decoding?,fine-tuning the target model,yes
+Why does prefix caching depend on token order?,until the first non-repeated token|prefix ends at the first non-repeated token,yes
+How many pieces can a multi-instance GPU be split into?,as many as seven pieces,yes
+Why measure latency in percentiles instead of the mean?,right-skewed,yes
+What are the three forms of model parallelism?,Splits the tensors within each layer,yes
+How small should a draft model be compared to the target?,ten times smaller,yes
+When is speculative decoding most useful?,most useful at low batch sizes,yes
+Which GPU generation introduced FP8 support?,Hopper introduces support for FP8,yes
+What are the two meanings of TPS?,Perceived TPS,yes
+What is the capital of France?,,no
+How do I use PyTorch Lightning to train a model?,,no
+How do I train a sentiment classifier from scratch?,,no
