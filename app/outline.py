@@ -49,24 +49,64 @@ def parse_toc(text: str) -> list[dict]:
     return entries
 
 def locate_entries(text: str, entries: list[dict]) -> list[dict]:
-    """Add 'pdf_page' to each outline entry: the PDF page where its heading appears.
+    """Add 'pdf_page', 'start_offset' and 'approx' to each outline entry.
 
     Chapters use the table-of-contents page plus a verified constant, because the
-    extracted text has no divider lines to search for. Sections are searched for
-    in the body. The value is None if a heading can't be found.
+    extracted text has no divider lines to search for; they start at their page's
+    first character. Sections are searched for in the body, taking the earliest match
+    of either heading layout. If a heading can't be found, it falls back to the start
+    of its TOC page + 2 and is marked approx=True.
     """
     body = re.search(r"^Chapter \d+: [^.\n]+$", text, re.M)
     start = body.start() if body else 0  # skip the table of contents itself
     index = build_page_index(text)
 
     for e in entries:
+        e["approx"] = False
         if e["level"] == 0:
             e["pdf_page"] = e["toc_page"] + TOC_TO_PDF_PAGE
+            e["start_offset"] = index[e["pdf_page"] - 1][0]
             continue
+
         title = r"\s+".join(re.escape(word) for word in e["title"].split())
-        # a running page header ("Chapter 7: Production") can sit between number and title
-        prefix = rf"{re.escape(e['number'])}\s+(?:Chapter\s+\d+:[^\n]*\s+)?"
-        m = re.compile(rf"(?:^|\f){prefix}{title}", re.M).search(text, start)
-        # m.end() - 1 is a character inside the title text, so it can't be the form feed itself
-        e["pdf_page"] = locate(index, m.end() - 1)[0] if m else None
+        number = re.escape(e["number"])
+        patterns = [
+            # Two-line form: the number alone on its line. A running chapter header
+            # can sit between the number and the title.
+            rf"(?:^|\f){number}[ \t]*\n\s*(?:Chapter\s+\d+:[^\n]*\s+)?{title}",
+            # One-line form, with body text on the very next line. The running page
+            # header looks similar but is followed by a blank line and a page number.
+            rf"(?:^|\f){number}[ \t]+{title}[ \t]*\n(?=\S)",
+        ]
+        matches = [re.compile(p, re.M).search(text, start) for p in patterns]
+        m = min((x for x in matches if x), key=lambda x: x.start(), default=None)
+
+        if m:
+            # m.end() - 1 is a character inside the heading, so it can't be a form feed
+            e["pdf_page"] = locate(index, m.end() - 1)[0]
+            e["start_offset"] = m.start() + (1 if text[m.start()] == "\f" else 0)
+        else:
+            e["pdf_page"] = e["toc_page"] + TOC_TO_PDF_PAGE
+            e["start_offset"] = index[e["pdf_page"] - 1][0]
+            e["approx"] = True
     return entries
+
+def build_outline(text: str) -> list[dict]:
+    """Parse the table of contents, locate every heading, and add each entry's end_offset."""
+    entries = locate_entries(text, parse_toc(text))
+    for i, e in enumerate(entries):
+        # the section ends where the next heading at the same or a higher level starts
+        following = next(
+            (n for n in entries[i + 1 :] if n["level"] <= e["level"] and n["start_offset"] is not None),
+            None,
+        )
+        e["end_offset"] = following["start_offset"] if following else len(text)
+    return entries
+
+
+def section_text(text: str, entries: list[dict], number: str) -> str:
+    """Return the text of one section, from its heading to the start of the next heading."""
+    entry = next(e for e in entries if e["number"] == number)
+    if entry["start_offset"] is None:
+        raise ValueError(f"Heading {number} was not found in the text")
+    return text[entry["start_offset"] : entry["end_offset"]]
