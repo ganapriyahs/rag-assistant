@@ -1,5 +1,7 @@
 import json
 import os
+import random
+import re
 import sys
 from pathlib import Path
 
@@ -14,6 +16,7 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 BOOK_PATH = Path(__file__).parent.parent / "data" / "sample_docs" / "inference_engineering.txt"
 NUM_CTX = 8192  # Ollama's default window is small; a lesson plus the conversation needs more
+BLANK = "_____"
 
 SYSTEM = (
     "You are a patient tutor teaching one lesson from a textbook. "
@@ -37,26 +40,11 @@ EXPLAIN_SCHEMA = {
     },
     "required": ["points"],
 }
-# The property order matters: the model fills the fields in order, so it quotes the
-# evidence first and then writes a question that the quote answers.
-QUESTION_SCHEMA = {
+CLOZE_SCHEMA = {
     "type": "object",
-    "properties": {
-        "evidence": {"type": "string"},
-        "question": {"type": "string"},
-        "answer_key": {"type": "string"},
-    },
-    "required": ["evidence", "question", "answer_key"],
+    "properties": {"blank": {"type": "string"}},
+    "required": ["blank"],
 }
-GRADE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "verdict": {"type": "string", "enum": ["correct", "partly_correct", "not_yet"]},
-        "feedback": {"type": "string"},
-    },
-    "required": ["verdict", "feedback"],
-}
-VERDICT_LABELS = {"correct": "Correct", "partly_correct": "Partly correct", "not_yet": "Not yet"}
 
 client = ollama.Client(host=OLLAMA_HOST)
 
@@ -75,10 +63,36 @@ def squash(s: str) -> str:
     return "".join(s.lower().split())
 
 
-def explain(lesson: str, tries: int = 3) -> str:
+def exact_quote(lesson: str, quote: str) -> str:
+    """Return the quote as it is written in the lesson, with line breaks turned into spaces.
+
+    The model's copy can lose spaces at line breaks ("actualprobability"); this finds the
+    real text again. Returns the model's copy unchanged if it can't be located.
+    """
+    squashed, positions = [], []
+    for i, ch in enumerate(lesson):
+        for c in squash(ch):  # squash() drops whitespace, so spaces and newlines add nothing
+            squashed.append(c)
+            positions.append(i)
+    target = squash(quote)
+    at = "".join(squashed).find(target)
+    if not target or at == -1:
+        return quote
+    start, end = positions[at], positions[at + len(target) - 1]
+    return " ".join(lesson[start : end + 1].split())
+
+
+def tokens(s: str) -> list[str]:
+    """Lowercase words with simple plural endings removed, e.g. 'Models!' -> 'model'."""
+    words = re.findall(r"[a-z0-9]+", s.lower().replace("’", "'"))
+    return [w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words]
+
+
+def explain(lesson: str, tries: int = 3) -> tuple[str, list[str]]:
     """Teach the lesson as short points, each backed by a sentence quoted from the book.
 
-    Points whose quote isn't really in the lesson are dropped.
+    Points whose quote isn't really in the lesson are dropped. Returns the text to show
+    and the list of exact quotes it used.
     """
     prompt = (
         f"LESSON TEXT:\n{lesson}\n\n"
@@ -102,52 +116,49 @@ def explain(lesson: str, tries: int = 3) -> str:
             break
     if not good:
         raise RuntimeError("Could not produce an explanation backed by quotes from the lesson.")
-    return "\n\n".join(
+    for p in good:
+        p["quote"] = exact_quote(lesson, p["quote"])
+    text = "\n\n".join(
         f"{i}. {p['explanation']}\n   Book: \"{p['quote']}\"" for i, p in enumerate(good, start=1)
     )
+    return text, [p["quote"] for p in good]
 
 
-def make_question(lesson: str, tries: int = 3) -> dict:
-    """Ask for a question built on a sentence quoted from the lesson, and check the quote is real."""
-    prompt = (
-        f"LESSON TEXT:\n{lesson}\n\n"
-        "Pick ONE important sentence from the lesson and copy it exactly as 'evidence'. "
-        "Then write ONE question that can be answered using only that sentence, and an 'answer_key': "
-        "ONE short sentence stating the single main idea a correct answer must contain. "
-        "The question must not mention 'the lesson' or 'the text'."
-    )
-    for _ in range(tries):
-        raw = chat(
-            [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
-            schema=QUESTION_SCHEMA,
-            temperature=0.3,
+def make_cloze(quotes: list[str], title: str, tries: int = 2) -> dict:
+    """Build a fill-in-the-blank question from one of the sentences the explanation just taught.
+
+    The model only chooses which term to blank out. Our code checks that the term appears in
+    the sentence exactly once (or the answer would leak) and isn't just the lesson's own title.
+    """
+    for quote in random.sample(quotes, len(quotes)):
+        prompt = (
+            f"SENTENCE: {quote}\n\n"
+            "Choose the single most important technical term in this sentence (1 to 3 words), "
+            "copied exactly as it appears. It must not be a common everyday word."
         )
-        try:
-            q = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if q.get("evidence") and squash(q["evidence"]) in squash(lesson):
-            return q
-    raise RuntimeError("Could not produce a question whose evidence quotes the lesson.")
+        for _ in range(tries):
+            raw = chat(
+                [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
+                schema=CLOZE_SCHEMA,
+                temperature=0.5,
+            )
+            try:
+                blank = json.loads(raw).get("blank", "").strip()
+            except json.JSONDecodeError:
+                continue
+            pattern = re.compile(re.escape(blank), re.IGNORECASE)
+            if len(blank) < 3 or len(pattern.findall(quote)) != 1:
+                continue
+            if all(t in tokens(title) for t in tokens(blank)):  # would just give away the lesson title
+                continue
+            return {"question": pattern.sub(BLANK, quote), "answer": blank, "evidence": quote}
+    raise RuntimeError("Could not build a fill-in-the-blank question from the lesson.")
 
 
-def grade(question: str, answer_key: str, answer: str) -> dict:
-    prompt = (
-        f"QUESTION: {question}\n"
-        f"ANSWER KEY: {answer_key}\n"
-        f"STUDENT ANSWER: {answer}\n\n"
-        "Use 'correct' if the student's answer expresses the main idea of the answer key, even in "
-        "different words or with less detail. Use 'partly_correct' only if it lacks the main idea but "
-        "contains related true content. Use 'not_yet' if it is wrong. An empty, off-topic, "
-        "'I don't know' or placeholder answer is always 'not_yet'. "
-        "In 'feedback', explain in 1-2 sentences what the answer key says."
-    )
-    raw = chat(
-        [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
-        schema=GRADE_SCHEMA,
-        temperature=0,
-    )
-    return json.loads(raw)
+def check_cloze(answer: str, blank: str) -> bool:
+    """Correct if every word of the expected term is in the answer, with at most 3 extra words."""
+    want, got = tokens(blank), tokens(answer)
+    return bool(want) and all(w in got for w in want) and len(got) <= len(want) + 3
 
 
 def main():
@@ -158,10 +169,11 @@ def main():
     lesson = section_text(text, entries, number).replace("\f", "\n")
 
     print(f"\n=== {entry['label']} (PDF p. {entry['pdf_page']}) ===\n")
-    print(explain(lesson))
+    explanation, quotes = explain(lesson)
+    print(explanation)
 
-    q = make_question(lesson)
-    print(f"\nQuestion: {q['question']}")
+    c = make_cloze(quotes, entry["title"])
+    print(f"\nFill in the blank:\n  {c['question']}")
 
     if len(sys.argv) > 2:
         answer = sys.argv[2]
@@ -169,10 +181,11 @@ def main():
     else:
         answer = input("\nYour answer: ")
 
-    result = grade(q["question"], q["answer_key"], answer)
-    print(f"\n{VERDICT_LABELS[result['verdict']]}. {result['feedback']}")
-    print(f"\nAnswer key: {q['answer_key']}")
-    print(f"From the book (PDF p. {entry['pdf_page']}): \"{q['evidence']}\"")
+    if check_cloze(answer, c["answer"]):
+        print("\nCorrect.")
+    else:
+        print(f"\nNot yet. The missing term was: {c['answer']}")
+    print(f"From the book (PDF p. {entry['pdf_page']}): \"{c['evidence']}\"")
 
 
 if __name__ == "__main__":
