@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import chromadb
 from chromadb.utils import embedding_functions
 import ollama
+from sentence_transformers import CrossEncoder
 
 load_dotenv()
 
@@ -14,6 +15,9 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 TOP_K = 3
 MAX_DISTANCE = 1.15
 DECLINE_PHRASES = ("i don't know", "i do not know", "does not contain", "doesn't contain", "does not mention")
+RERANK = True
+CANDIDATES = 30
+_reranker = None
 
 _client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
 _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
@@ -27,18 +31,31 @@ def get_collection():
     return _client.get_collection(name=COLLECTION_NAME, embedding_function=_embedding_fn)
 
 
-def retrieve(question: str, top_k: int = TOP_K) -> list[dict]:
-    """Embed the question and return the top_k most similar chunks with their source metadata."""
+def retrieve(question: str, top_k: int = TOP_K, rerank: bool = RERANK) -> list[dict]:
+    """Embed the question, optionally re-rank a wider candidate pool, and return the top_k chunks."""
     collection = get_collection()
+    n_results = CANDIDATES if rerank else top_k
     results = collection.query(
         query_texts=[question],
-        n_results=top_k,
+        n_results=n_results,
         include=["documents", "metadatas", "distances"],
     )
 
     chunks = []
     for text, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
         chunks.append({"text": text, "source": meta["source"], "distance": dist})
+
+    best_distance = chunks[0]["distance"] if chunks else None
+
+    if rerank and chunks:
+        scores = _get_reranker().predict([(question, c["text"]) for c in chunks])
+        for c, s in zip(chunks, scores):
+            c["rerank_score"] = float(s)
+        chunks = sorted(chunks, key=lambda c: c["rerank_score"], reverse=True)
+
+    chunks = chunks[:top_k]
+    for c in chunks:
+        c["best_distance"] = best_distance
     return chunks
 
 
@@ -62,7 +79,7 @@ def generate_answer(question: str, top_k: int = TOP_K) -> dict:
     if not chunks:
         return {"answer": "No documents found. Run ingestion first.", "sources": []}
 
-    best = min((c["distance"] for c in chunks if "distance" in c), default=0)
+    best = chunks[0].get("best_distance", 0)
     if best > MAX_DISTANCE:
         return {"answer": "I don't know. That doesn't seem to be covered in the documents.", "sources": []}
 
@@ -78,6 +95,14 @@ def generate_answer(question: str, top_k: int = TOP_K) -> dict:
     sources = [] if declined else sorted(set(c["source"] for c in chunks))
     return {"answer": answer, "sources": sources}
 
+
+
+
+def _get_reranker():
+    global _reranker
+    if _reranker is None:
+        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    return _reranker
 
 if __name__ == "__main__":
     result = generate_answer("What is retrieval-augmented generation?")
