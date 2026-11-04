@@ -7,3 +7,5 @@ chroma_db/
 *.egg-info/
 data/sample_docs/inference_engineering.pdf
 data/sample_docs/inference_engineering.txt
+eval/*.json
+eval/answers_before.txt

@@ -13,6 +13,7 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     sources: list[str]
+    locations: list[str] = []
 
 
 @app.get("/health")

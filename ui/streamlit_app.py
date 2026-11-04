@@ -36,6 +36,12 @@ if st.button("Ask") and question.strip():
                 st.subheader("Sources")
                 for source in result["sources"]:
                     st.markdown(f"- `{source}`")
+
+                locations = result.get("locations", [])
+                if locations:
+                    st.subheader("Where in the book")
+                    for location in locations:
+                        st.markdown(f"- {location}")
             else:
                 st.caption("No sources: the documents didn't give a grounded answer.")
 
