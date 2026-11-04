@@ -19,3 +19,7 @@ What is the capital of France?,,no
 How do I use PyTorch Lightning to train a model?,,no
 How do I train a sentiment classifier from scratch?,,no
 What is inference?,Inference is the second phase,yes
+How do I deploy a model with Helm charts on Kubernetes?,,no
+How does Ray Serve autoscale replicas?,,no
+How do I package a model with BentoML?,,no
+How do I provision GPU servers with Terraform?,,no
