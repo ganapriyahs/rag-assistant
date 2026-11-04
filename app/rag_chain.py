@@ -12,6 +12,8 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 TOP_K = 3
+MAX_DISTANCE = 1.15
+DECLINE_PHRASES = ("i don't know", "i do not know", "does not contain", "doesn't contain", "does not mention")
 
 _client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
 _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
@@ -28,11 +30,15 @@ def get_collection():
 def retrieve(question: str, top_k: int = TOP_K) -> list[dict]:
     """Embed the question and return the top_k most similar chunks with their source metadata."""
     collection = get_collection()
-    results = collection.query(query_texts=[question], n_results=top_k)
+    results = collection.query(
+        query_texts=[question],
+        n_results=top_k,
+        include=["documents", "metadatas", "distances"],
+    )
 
     chunks = []
-    for text, meta in zip(results["documents"][0], results["metadatas"][0]):
-        chunks.append({"text": text, "source": meta["source"]})
+    for text, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
+        chunks.append({"text": text, "source": meta["source"], "distance": dist})
     return chunks
 
 
@@ -56,6 +62,10 @@ def generate_answer(question: str, top_k: int = TOP_K) -> dict:
     if not chunks:
         return {"answer": "No documents found. Run ingestion first.", "sources": []}
 
+    best = min((c["distance"] for c in chunks if "distance" in c), default=0)
+    if best > MAX_DISTANCE:
+        return {"answer": "I don't know. That doesn't seem to be covered in the documents.", "sources": []}
+
     prompt = build_prompt(question, chunks)
 
     response = _ollama_client.chat(
@@ -64,8 +74,8 @@ def generate_answer(question: str, top_k: int = TOP_K) -> dict:
     )
 
     answer = response["message"]["content"]
-    sources = sorted(set(c["source"] for c in chunks))
-
+    declined = any(p in answer.lower().replace("’", "'") for p in DECLINE_PHRASES)
+    sources = [] if declined else sorted(set(c["source"] for c in chunks))
     return {"answer": answer, "sources": sources}
 
 
