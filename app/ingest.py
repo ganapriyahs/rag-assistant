@@ -53,18 +53,33 @@ def build_page_index(text: str) -> list[tuple[int, int, str]]:
 
     Pages are separated by form feed characters. Text without form feeds is
     treated as a single unpaged document: page 0, no chapter.
+
+    Chapter openers come from the table of contents when the text has one. Otherwise
+    the chapter is taken from running "Chapter N: Title" page headers.
     """
     if "\f" not in text:
         return [(0, 0, "")]
+
+    # Imported here because app.outline itself imports from this module.
+    from app.outline import TOC_TO_PDF_PAGE, parse_toc
+
+    chapter_starts = {
+        e["toc_page"] + TOC_TO_PDF_PAGE: f"Chapter {e['number']}: {e['title']}"
+        for e in parse_toc(text)
+        if e["level"] == 0
+    }
 
     index = []
     chapter = ""
     offset = 0
     for pdf_page, page_text in enumerate(text.split("\f"), start=1):
-        for line in page_text.splitlines():
-            m = CHAPTER_HEADER.match(line.strip())
-            if m:
-                chapter = f"Chapter {m.group(1)}: {m.group(2)}"
+        if chapter_starts:
+            chapter = chapter_starts.get(pdf_page, chapter)
+        else:
+            for line in page_text.splitlines():
+                m = CHAPTER_HEADER.match(line.strip())
+                if m:
+                    chapter = f"Chapter {m.group(1)}: {m.group(2)}"
         index.append((offset, pdf_page - PAGE_OFFSET, chapter))
         offset += len(page_text) + 1  # +1 for the form feed itself
     return index
