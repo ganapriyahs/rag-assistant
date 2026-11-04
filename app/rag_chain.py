@@ -17,6 +17,7 @@ MAX_DISTANCE = 1.15
 DECLINE_PHRASES = ("i don't know", "i do not know", "does not contain", "doesn't contain", "does not mention")
 RERANK = True
 CANDIDATES = 30
+MAX_SCORE_GAP = 3.5
 _reranker = None
 
 _client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
@@ -117,6 +118,10 @@ def generate_answer(question: str, top_k: int = TOP_K) -> dict:
             "sources": [],
             "locations": [],
         }
+    
+    if "rerank_score" in chunks[0]:
+        top_score = chunks[0]["rerank_score"]
+        chunks = [c for c in chunks if top_score - c["rerank_score"] <= MAX_SCORE_GAP]
 
     prompt = build_prompt(question, chunks)
 
